@@ -40,7 +40,17 @@ import org.apache.poi.ss.formula.functions.Countif.ErrorMatcher;
      * @return true if there should be a range argument before the criteria pairs
      */
     protected abstract boolean hasInitialRange();
-        
+  
+    /**
+     * Implements the details of a specific aggregation functions
+     */
+    protected static interface Aggregator {
+    	void addValue(ValueEval d);
+    	ValueEval getResult();
+    }
+
+    protected abstract Aggregator createAggregator();
+    
     public ValueEval evaluate(ValueEval[] args, OperationEvaluationContext ec) {
         final boolean hasInitialRange = hasInitialRange();
         final int firstCriteria = hasInitialRange ? 1 : 0;
@@ -67,8 +77,7 @@ import org.apache.poi.ss.formula.functions.Countif.ErrorMatcher;
             validateCriteriaRanges(sumRange, ae);
             validateCriteria(mp);
 
-            double result = aggregateMatchingCells(sumRange, ae, mp);
-            return new NumberEval(result);
+            return aggregateMatchingCells(createAggregator(), sumRange, ae, mp);
         } catch (EvaluationException e) {
             return e.getErrorEval();
         }
@@ -121,12 +130,13 @@ import org.apache.poi.ss.formula.functions.Countif.ErrorMatcher;
      * @param ranges  criteria ranges
      * @param predicates  array of predicates, a predicate for each value in <code>ranges</code>
      * @return the computed value
+     * @throws EvaluationException if there is an issue with eval
      */
-    private static double aggregateMatchingCells(AreaEval sumRange, AreaEval[] ranges, I_MatchPredicate[] predicates) {
+    private static ValueEval aggregateMatchingCells(Aggregator aggregator, AreaEval sumRange, AreaEval[] ranges, I_MatchPredicate[] predicates)
+            throws EvaluationException {
         int height = ranges[0].getHeight();
         int width = ranges[0].getWidth();
 
-        double result = 0.0;
         for (int r = 0; r < height; r++) {
             for (int c = 0; c < width; c++) {
 
@@ -143,32 +153,20 @@ import org.apache.poi.ss.formula.functions.Countif.ErrorMatcher;
 
                 }
 
-                if(matches) { // sum only if all of the corresponding criteria specified are true for that cell.
-                    result += accumulate(sumRange, r, c);
+                if(matches) { // aggregate only if all of the corresponding criteria specified are true for that cell.
+                    if(sumRange != null) {
+                        ValueEval addend = sumRange.getRelativeValue(r, c);
+                        if (addend instanceof ErrorEval) {
+                            throw new EvaluationException((ErrorEval)addend);
+                        }
+                        aggregator.addValue(addend);    
+                    } else {
+                        aggregator.addValue(null);
+                    }
                 }
             }
         }
-        return result;
-    }
-
-    /**
-     * For counts, this would return 1, for sums it returns a cell value or zero.
-     * This is only called after all the criteria are confirmed true for the coordinates.
-     * @param sumRange if used
-     * @param relRowIndex
-     * @param relColIndex
-     * @return the aggregate input value corresponding to the given range coordinates
-     */
-    private static double accumulate(AreaEval sumRange, int relRowIndex, int relColIndex) {
-        if (sumRange == null) return 1.0; // count
-        
-        ValueEval addend = sumRange.getRelativeValue(relRowIndex, relColIndex);
-        if (addend instanceof NumberEval) {
-            return ((NumberEval)addend).getNumberValue();
-        }
-        // everything else (including string and boolean values) counts as zero
-        return 0.0;
-
+        return aggregator.getResult();
     }
 
     protected static AreaEval convertRangeArg(ValueEval eval) throws EvaluationException {
